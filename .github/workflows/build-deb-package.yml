@@ -1,0 +1,76 @@
+name: Build Debian Package for FRRouting
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout the repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Fetch all branches and tags (not just the current commit)
+          fetch-depth: 0
+          # If your Debian/upstream branches are specific, list them explicitly:
+          ref: |
+            refs/heads/master
+
+      - name: List branches (debug)
+        run: git branch -a
+
+      # Install build dependencies (adjust as needed for FRRouting)
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev debhelper devscripts equivs build-essential
+          curl -sSL -o libyang2.deb 'https://ci1.netdef.org/artifact/LIBYANG-LIBYANG21/shared/build-13/Ubuntu-22.04-x86_64-Packages/libyang2_2.1.128-2%7Eubuntu22.04u2_amd64.deb'
+          curl -sSL -o libyang2-dev.deb 'https://ci1.netdef.org/artifact/LIBYANG-LIBYANG21/shared/build-13/Ubuntu-22.04-x86_64-Packages/libyang2-dev_2.1.128-2%7Eubuntu22.04u2_amd64.deb'
+          sudo apt-get install -y ./libyang2.deb
+          sudo apt-get install -y ./libyang2-dev.deb
+          rm -rf libyang2.deb libyang2-dev.deb
+          sudo apt -y install lua5.3 liblua5.3-dev
+          sudo mk-build-deps --install --remove debian/control
+
+      # Build the Debian package
+      - name: Build Debian package
+        run: |
+          sudo apt-get update
+          sudo apt-get install git-buildpackage
+          gbp buildpackage --git-builder=dpkg-buildpackage --git-ignore-branch --git-debian-branch=master --git-upstream-branch=master -Ppkg.frr.lua
+          for deb_file in ../*.deb; do
+            sha256sum "$deb_file" > "$deb_file.sha256"
+          done
+
+      # Upload the generated .deb file as an artifact for use in the release job
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frr-deb
+          path: |
+            ~/work/frr/*.deb
+            ~/work/frr/*.deb.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      # Download the built artifact from the build job
+      - name: Download package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frr-deb
+
+      - name: Create release with checksums
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          files: |
+            *.deb
+            *.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
